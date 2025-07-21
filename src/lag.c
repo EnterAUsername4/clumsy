@@ -7,7 +7,7 @@
 #define KEEP_AT_MOST 2000
 // send FLUSH_WHEN_FULL packets when buffer is full
 #define FLUSH_WHEN_FULL 800
-#define LAG_DEFAULT 50
+#define LAG_DEFAULT 170
 
 // don't need a chance
 static Ihandle *inboundCheckbox, *outboundCheckbox, *timeInput;
@@ -49,7 +49,7 @@ static Ihandle *lagSetupUI() {
 
     // enable by default to avoid confusing
     IupSetAttribute(inboundCheckbox, "VALUE", "ON");
-    IupSetAttribute(outboundCheckbox, "VALUE", "ON");
+    IupSetAttribute(outboundCheckbox, "VALUE", "OFF");
 
     if (parameterized) {
         setFromParameter(inboundCheckbox, "VALUE", NAME"-inbound");
@@ -86,6 +86,17 @@ static void lagCloseDown(PacketNode *head, PacketNode *tail) {
 static short lagProcess(PacketNode *head, PacketNode *tail) {
     DWORD currentTime = timeGetTime();
     PacketNode *pac = tail->prev;
+
+    // Flush immediately if lagTime is <= 0
+    if (lagTime <= -50) {
+        LOG("Lag time <= 0 (%d). Flushing immediately.", lagTime);
+        while (!isBufEmpty()) {
+            insertAfter(popNode(bufTail->prev), head);
+            --bufSize;
+        }
+        return FALSE;
+    }
+
     // pick up all packets and fill in the current time
     while (bufSize < KEEP_AT_MOST && pac != head) {
         if (checkDirection(pac->addr.Outbound, lagInbound, lagOutbound)) {
@@ -133,3 +144,21 @@ Module lagModule = {
     // runtime fields
     0, 0, NULL
 };
+
+void Set_Lag_inboundCheckbox(const char* value) {
+    IupSetAttribute(inboundCheckbox, "VALUE", value);
+}
+void Set_Lag_outboundCheckbox(const char* value) {
+    IupSetAttribute(outboundCheckbox, "VALUE", value);
+}
+void Set_Lag_timeInput(const char* value) {
+   
+   IupSetAttribute(timeInput, "VALUE", value);
+}
+
+void setLag(int value) {
+    char str[256];
+    sprintf(str, "%d", value);
+    setFromValue(timeInput, "VALUE", str);
+    setFromValue(lagModule.toggleHandle, "VALUE", value > 0 ? "YES" : "NO");
+}
