@@ -4,7 +4,7 @@
 #include "common.h"
 #define NAME "duplicate"
 #define COPIES_MIN "2"
-#define COPIES_MAX "50"
+#define COPIES_MAX "100"
 #define COPIES_COUNT 2
 
 static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *countInput;
