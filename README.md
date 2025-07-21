@@ -2,6 +2,8 @@
 
 __clumsy makes your network condition on Windows significantly worse, but in a managed and interactive manner.__
 
+[zig version 0.9.0](https://ziglang.org/download/0.9.0/zig-windows-x86_64-0.9.0.zip)
+
 Leveraging the awesome [WinDivert](http://reqrypt.org/windivert.html), clumsy stops living network packets and capture them, lag/drop/tamper/.. the packets on demand, then send them away. Whether you want to track down weird bugs related to broken network, or evaluate your application on poor connections, clumsy will come in handy:
 
 * No installation.
