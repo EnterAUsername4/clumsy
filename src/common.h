@@ -4,12 +4,14 @@
 #include "iup.h"
 #include "windivert.h"
 
-#define CLUMSY_VERSION "0.3"
+#define CLUMSY_VERSION "0.6.1 v3"
 #define MSG_BUFSIZE 512
 #define FILTER_BUFSIZE 1024
 #define NAME_SIZE 16
-#define MODULE_CNT 8
+#define MODULE_CNT 9
 #define ICON_UPDATE_MS 200
+
+#define ACTION_COUNT 3
 
 #define CONTROLS_HANDLE "__CONTROLS_HANDLE"
 #define SYNCED_VALUE "__SYNCED_VALUE"
@@ -136,6 +138,7 @@ typedef struct {
     short lastEnabled; // if it is enabled on last run
     short processTriggered; // whether this module has been triggered in last step 
     Ihandle *iconHandle; // store the icon to be updated
+    Ihandle* toggleHandle;
 } Module;
 
 extern Module lagModule;
@@ -144,7 +147,9 @@ extern Module throttleModule;
 extern Module oodModule;
 extern Module dupModule;
 extern Module tamperModule;
+extern Module repeaterModule;
 extern Module resetModule;
+extern Module disconnectModule;
 extern Module bandwidthModule;
 extern Module* modules[MODULE_CNT]; // all modules in a list
 
@@ -192,5 +197,11 @@ extern const unsigned char icon8x8[8*8];
 // parameterized
 extern BOOL parameterized;
 void setFromParameter(Ihandle *ih, const char *field, const char *key);
+void setFromValue(Ihandle *ih, const char *field, const char *val);
 BOOL parseArgs(int argc, char* argv[]);
 
+extern void setEnabled(BOOL value);
+extern void setFilter(const char* value);
+extern void setLag(int value);
+extern void setDrop(int value);
+extern void setOOD(int value);
