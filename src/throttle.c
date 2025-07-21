@@ -3,10 +3,10 @@
 #include "common.h"
 #define NAME "throttle"
 #define TIME_MIN "0"
-#define TIME_MAX "1000"
-#define TIME_DEFAULT 30
+#define TIME_MAX "1500"
+#define TIME_DEFAULT 1500
 // threshold for how many packet to throttle at most
-#define KEEP_AT_MOST 1000
+#define KEEP_AT_MOST 1500
 
 static Ihandle *inboundCheckbox, *outboundCheckbox, *chanceInput, *frameInput, *dropThrottledCheckbox;
 
@@ -42,7 +42,7 @@ static Ihandle *throttleSetupUI() {
         );
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
-    IupSetAttribute(chanceInput, "VALUE", "10.0");
+    IupSetAttribute(chanceInput, "VALUE", "100");
     IupSetCallback(chanceInput, "VALUECHANGED_CB", uiSyncChance);
     IupSetAttribute(chanceInput, SYNCED_VALUE, (char*)&chance);
     IupSetCallback(inboundCheckbox, "ACTION", (Icallback)uiSyncToggle);
