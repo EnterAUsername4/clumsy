@@ -171,6 +171,32 @@ void setFromParameter(Ihandle *ih, const char *field, const char *key) {
     }
 }
 
+void setFromValue(Ihandle *ih, const char *field, const char *val) {
+    Icallback cb;
+    IstateCallback scb;
+    // FIXME there should be a way to trigger handler
+    // manually trigger the callback, as iup won't call it
+    // Notice that currently only works on IupToggle, IupText
+    // and Iup lacks a way to get widget's type, so can't do much about this
+    if (val) {
+        IupSetAttribute(ih, field, val);
+        cb = IupGetCallback(ih, "VALUECHANGED_CB");
+        if (cb) {
+            LOG("triggered VALUECHANGED_CB on val: %s", val);
+            cb(ih);
+            return;
+        }
+        // cb's argument type IS NOT ONLY Ihandle, receives a extra "state" int
+        scb = (IstateCallback)IupGetCallback(ih, "ACTION");
+        if (scb) {
+            LOG("triggered ACTION on val: %s", val);
+            // IupGetInt handles yes/no on/off upper lower case things.
+            scb(ih, IupGetInt(ih, "VALUE"));
+            return;
+        }
+    }
+}
+
 // parse arguments and set globals
 // only checks for argument style, no extra validation is done
 BOOL parseArgs(int argc, char* argv[]) {
