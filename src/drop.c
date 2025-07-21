@@ -22,7 +22,7 @@ static Ihandle* dropSetupUI() {
     );
 
     IupSetAttribute(chanceInput, "VISIBLECOLUMNS", "4");
-    IupSetAttribute(chanceInput, "VALUE", "10.0");
+    IupSetAttribute(chanceInput, "VALUE", "100");
     IupSetCallback(chanceInput, "VALUECHANGED_CB", uiSyncChance);
     IupSetAttribute(chanceInput, SYNCED_VALUE, (char*)&chance);
     IupSetCallback(inboundCheckbox, "ACTION", (Icallback)uiSyncToggle);
@@ -32,7 +32,7 @@ static Ihandle* dropSetupUI() {
 
     // enable by default to avoid confusing
     IupSetAttribute(inboundCheckbox, "VALUE", "ON");
-    IupSetAttribute(outboundCheckbox, "VALUE", "ON");
+    IupSetAttribute(outboundCheckbox, "VALUE", "OFF");
 
     if (parameterized) {
         setFromParameter(inboundCheckbox, "VALUE", NAME"-inbound");
@@ -84,3 +84,20 @@ Module dropModule = {
     // runtime fields
     0, 0, NULL
 };
+
+void Set_Drop_inboundCheckbox(const char* value) {
+    IupSetAttribute(inboundCheckbox, "VALUE", value);
+}
+void Set_Drop_outboundCheckbox(const char* value) {
+    IupSetAttribute(outboundCheckbox, "VALUE", value);
+}
+void Set_Drop_chanceInput(const char* value) {
+    IupSetAttribute(chanceInput, "VALUE", value);
+}
+
+void setDrop(int value) {
+    char str[256];
+    sprintf(str, "%d", value);
+    setFromValue(chanceInput, "VALUE", str);
+    setFromValue(dropModule.toggleHandle, "VALUE", value > 0 ? "YES" : "NO");
+}
