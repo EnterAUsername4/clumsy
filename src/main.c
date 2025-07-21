@@ -3,8 +3,14 @@
 #include <string.h>
 #include <time.h>
 #include <Windows.h>
+#include <conio.h>
 #include "iup.h"
+#include "drop.h"
+#include "lag.h"
+#include "disconnect.h"
 #include "common.h"
+#include "keycode.h"
+extern void setup_crash_log_handler(void);
 
 // ! the order decides which module get processed first
 Module* modules[MODULE_CNT] = {
@@ -14,23 +20,52 @@ Module* modules[MODULE_CNT] = {
     &dupModule,
     &oodModule,
     &tamperModule,
+	&disconnectModule,
     &resetModule,
 	&bandwidthModule,
 };
 
+volatile BOOL isFiltering = FALSE;
 volatile short sendState = SEND_STATUS_NONE;
+
+// rainbow is enabled
+static int rainbowModeEnabled = 1;  // 1 = rainbow on, 0 = off
+static Ihandle* rainbowTimer = NULL;
+static Ihandle* rainbowCheckbox;
 
 // global iup handlers
 static Ihandle *dialog, *topFrame, *bottomFrame; 
 static Ihandle *statusLabel;
 static Ihandle *filterText, *filterButton;
-Ihandle *filterSelectList;
+static Ihandle *filterSelectList;
+static Ihandle *tabs;
+static Ihandle *groupBox, *toggle, *controls, *icon;
 // timer to update icons
 static Ihandle *stateIcon;
-static Ihandle *timer;
+static Ihandle *timer, *timer2;
 static Ihandle *timeout = NULL;
+// iup theme handler
+static Ihandle *themeList;
+static Ihandle *themeLabel;
+
+// iup box handler
+static Ihandle *keybindVBox;
+static Ihandle *topVbox, *bottomVbox, *dialogVBox, *controlHbox;
+static Ihandle *noneIcon, *doingIcon, *errorIcon;
+
+// iup label handler
+static Ihandle* label;
+
+// iup misc
+static Ihandle* dlg;
+
+static Ihandle* hbox;
+static Ihandle* text;
+
+static Ihandle* child;
 
 void showStatus(const char *line);
+static int KEYPRESS_CB(Ihandle *ih, int c, int press);
 static int uiOnDialogShow(Ihandle *ih, int state);
 static int uiStopCb(Ihandle *ih);
 static int uiStartCb(Ihandle *ih);
@@ -52,6 +87,11 @@ UINT filtersSize;
 filterRecord filters[CONFIG_MAX_RECORDS] = {0};
 char configBuf[CONFIG_BUF_SIZE+2]; // add some padding to write \n
 BOOL parameterized = 0; // parameterized flag, means reading args from command line
+
+const char* actions[] = {
+        "Toggle Filters",
+        NULL
+};
 
 // loading up filters and fill in
 void loadConfig() {
@@ -109,8 +149,7 @@ EAT_SPACE:  while (isspace(*current)) { ++current; }
         LOG("Loaded %u records.", filtersSize);
     }
 
-    if (!f || filtersSize == 0)
-    {
+    if (!f || filtersSize == 0) {
         LOG("Failed to load from config. Fill in a simple one.");
         // config is missing or ill-formed. fill in some simple ones
         filters[filtersSize].filterName = "loopback packets";
@@ -119,10 +158,225 @@ EAT_SPACE:  while (isspace(*current)) { ++current; }
     }
 }
 
+DWORD NameToVkCode(const char* name) {
+    for (int i = 0; keyMap[i].name != NULL; ++i) {
+        if (_stricmp(name, keyMap[i].name) == 0)
+            return keyMap[i].vk;
+    }
+    return 0; // unknown
+}
+
+const char* VkCodeToName(DWORD vk) {
+    for (int i = 0; keyMap[i].name != NULL; ++i) {
+        if (keyMap[i].vk == vk)
+            return keyMap[i].name;
+    }
+    return "UNKNOWN";
+}
+
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT *pKeyBoard = (KBDLLHOOKSTRUCT *)lParam;
+        DWORD pressedKey = pKeyBoard->vkCode;
+
+        if (wParam == WM_KEYDOWN) {
+            if (pressedKey == actionKeybinds[0]) {  // Toggle Filters
+                if (isFiltering) {
+                    uiStopCb(NULL);
+                    isFiltering = FALSE;
+                } else {
+                    uiStartCb(NULL);
+                    isFiltering = TRUE;
+                }
+            }
+        }
+    }
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+void LoadKeybindsFromFile() {
+    FILE* f = fopen(CONFIG_KEYBINDS_FILE, "r");
+    if (!f) return;
+
+    char line[64];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0; // strip newline
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+
+        *eq = 0;
+        const char* key = line;
+        const char* val = eq + 1;
+
+        if (strcmp(key, "ToggleFilters") == 0) {
+            DWORD vk = NameToVkCode(val);
+            if (vk != 0)
+                actionKeybinds[0] = vk;
+        }
+    }
+
+    fclose(f);
+}
+
+void SaveKeybindsToFile() {
+    FILE* f = fopen(CONFIG_KEYBINDS_FILE, "w");
+    if (!f) return;
+
+    const char* name = VkCodeToName(actionKeybinds[0]);  // Only ToggleFilters
+    fprintf(f, "ToggleFilters=%s\n", name);
+
+    fclose(f);
+}
+
+void HSVtoRGB(double h, double s, double v, double *r, double *g, double *b) {
+    int sector = (int)(h * 6.0);
+    double f = h * 6.0 - sector;
+    double p = v * (1.0 - s);
+    double q = v * (1.0 - f * s);
+    double t = v * (1.0 - (1.0 - f) * s);
+
+    switch (sector % 6) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        case 5: *r = v; *g = p; *b = q; break;
+    }
+}
+
+void toggleRainbowMode(int enable) {
+    rainbowModeEnabled = enable;
+    if (rainbowTimer)
+        IupSetAttribute(rainbowTimer, "RUN", enable ? "YES" : "NO");
+
+    if (!enable) {
+        // Restore theme text color
+        const char* fg = IupGetAttribute(dialogVBox, "FGCOLOR");  // fallback to theme
+        IupSetAttribute(statusLabel, "FGCOLOR", fg);
+        IupSetAttribute(bottomFrame, "FGCOLOR", fg);
+    }
+}
+
+static int uiRainbowTextColorCb(Ihandle *ih) {
+    static double hue = 0.0;
+    double r, g, b;
+    char colorStr[20];
+
+    // Smaller increment for smoother transition
+    hue += 0.002;  // smoother than 0.02
+    if (hue >= 1.0) hue -= 1.0;
+
+    // Use full saturation and value for vivid color cycling
+    HSVtoRGB(hue, 1.0, 1.0, &r, &g, &b);
+
+    // Convert to RGB and set UI attributes
+    sprintf(colorStr, "%d %d %d", (int)(r * 255), (int)(g * 255), (int)(b * 255));
+    IupSetAttribute(statusLabel, "FGCOLOR", colorStr);
+    IupSetAttribute(bottomFrame, "FGCOLOR", colorStr);
+
+    IupFlush();
+    return IUP_DEFAULT;
+}
+
+void apply_theme_recursive(Ihandle* ih, const char* bgcolor, const char* fgcolor)
+{
+    if (!ih) return;
+
+    IupSetAttribute(ih, "BGCOLOR", bgcolor);
+    IupSetAttribute(ih, "FGCOLOR", fgcolor);
+    IupSetAttribute(ih, "FLAT", "YES");  // Helps remove native 3D borders if supported
+
+    int count = IupGetChildCount(ih);
+    for (int i = 0; i < count; ++i) {
+        apply_theme_recursive(IupGetChild(ih, i), bgcolor, fgcolor);
+    }
+}
+
+static int uiThemeSelectCb(Ihandle *ih, char *text, int item, int state) {
+    if (state == 1) {
+        const char* bg;
+        const char* fg;
+
+        if (strcmp(text, "Dark") == 0) {
+            bg = "40 40 40";
+            fg = "255 255 255";
+        } else {
+            bg = "255 255 255";
+            fg = "0 0 0";
+        }
+
+        apply_theme_recursive(dialog, bg, fg);
+
+        IupSetAttribute(statusLabel, "BGCOLOR", bg);
+        IupSetAttribute(bottomFrame, "BGCOLOR", bg);
+
+        // Only apply static FGCOLOR if rainbow mode is off
+        if (!rainbowModeEnabled) {
+            IupSetAttribute(statusLabel, "FGCOLOR", fg);
+            IupSetAttribute(bottomFrame, "FGCOLOR", fg);
+        }
+
+        IupSetAttribute(filterText, "BGCOLOR", bg);
+        IupSetAttribute(filterText, "FGCOLOR", fg);
+        IupSetAttribute(filterSelectList, "BGCOLOR", bg);
+        IupSetAttribute(filterSelectList, "FGCOLOR", fg);
+        IupSetAttribute(dialogVBox, "FGCOLOR", fg);
+        IupSetAttribute(dialogVBox, "BGCOLOR", bg);
+    }
+
+    return IUP_DEFAULT;
+}
+
+void VkCodeToString(DWORD vk, char* outStr, int outStrSize) {
+    UINT scanCode = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+    if (scanCode == 0) {
+        strncpy(outStr, "Unknown", outStrSize);
+        return;
+    }
+
+    // Adjust for arrow keys (special cases)
+    switch (vk) {
+        case VK_LEFT:  scanCode = 0x4B; break;
+        case VK_UP:    scanCode = 0x48; break;
+        case VK_RIGHT: scanCode = 0x4D; break;
+        case VK_DOWN:  scanCode = 0x50; break;
+    }
+
+    if (GetKeyNameText(scanCode << 16, outStr, outStrSize) == 0) {
+        strncpy(outStr, "Unknown", outStrSize);
+    }
+}
+
+int OnKeyCapture(Ihandle* ih, int c, int press, int release, int repeat) {
+    if (press) {
+        for (int vk = 0x08; vk <= 0xFE; vk++) {
+            if (GetAsyncKeyState(vk) & 0x8000) {
+                int actionIndex = (int)(intptr_t)IupGetAttribute(ih, "ACTION_INDEX");
+                actionKeybinds[actionIndex] = vk;
+
+                char keyName[64];
+                VkCodeToString(vk, keyName, sizeof(keyName));
+                IupSetAttribute(ih, "VALUE", keyName);
+
+                SaveKeybindsToFile();
+
+                // Remove focus so more keys aren't captured
+                dlg = IupGetDialog(ih);
+                IupSetFocus(dlg);
+                break;
+            }
+        }
+
+        return IUP_IGNORE;
+    }
+
+    return IUP_DEFAULT;
+}
+
 void init(int argc, char* argv[]) {
     UINT ix;
-    Ihandle *topVbox, *bottomVbox, *dialogVBox, *controlHbox;
-    Ihandle *noneIcon, *doingIcon, *errorIcon;
     char* arg_value = NULL;
 
     // fill in config
@@ -133,9 +387,21 @@ void init(int argc, char* argv[]) {
 
     // this is so easy to get wrong so it's pretty worth noting in the program
     statusLabel = IupLabel("NOTICE: When capturing localhost (loopback) packets, you CAN'T include inbound criteria.\n"
-        "Filters like 'udp' need to be 'udp and outbound' to work. See readme for more info.");
+        "Filters like 'udp' need to be 'udp and outbound' to work. See readme for more info.\nDon't use dark theme right now does not work.");
     IupSetAttribute(statusLabel, "EXPAND", "HORIZONTAL");
     IupSetAttribute(statusLabel, "PADDING", "8x8");
+
+    themeList = IupList(NULL);
+    IupSetAttribute(themeList, "DROPDOWN", "YES");
+    IupSetAttribute(themeList, "VISIBLECOLUMNS", "10");
+    IupSetAttribute(themeList, "1", "Light");
+    IupSetAttribute(themeList, "2", "Dark");
+    IupSetAttribute(themeList, "VALUE", "1"); // default to Light
+    IupSetCallback(themeList, "ACTION", (Icallback)uiThemeSelectCb);
+
+    IupSetCallback(rainbowCheckbox, "ACTION", (Icallback)toggleRainbowMode);
+
+    IupSetAttribute(rainbowCheckbox, "VALUE", "ON");  // Start enabled
 
     topFrame = IupFrame(
         topVbox = IupVbox(
@@ -143,6 +409,8 @@ void init(int argc, char* argv[]) {
             controlHbox = IupHbox(
                 stateIcon = IupLabel(NULL),
                 filterButton = IupButton("Start", NULL),
+                IupFill(),
+                rainbowCheckbox = IupToggle("Rainbow Text", NULL),
                 IupFill(),
                 IupLabel("Presets:  "),
                 filterSelectList = IupList(NULL),
@@ -208,7 +476,7 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(noneIcon, "0", "BGCOLOR");
     IupSetAttribute(noneIcon, "1", "224 224 224");
     IupSetAttribute(doingIcon, "0", "BGCOLOR");
-    IupSetAttribute(doingIcon, "1", "109 170 44");
+    IupSetAttribute(doingIcon, "1", "145 51 255");
     IupSetAttribute(errorIcon, "0", "BGCOLOR");
     IupSetAttribute(errorIcon, "1", "208 70 72");
     IupSetHandle("none_icon", noneIcon);
@@ -220,12 +488,65 @@ void init(int argc, char* argv[]) {
         uiSetupModule(*(modules+ix), bottomVbox);
     }
 
+    keybindVBox = IupVbox(NULL);
+
+    for (int i = 0; i < 3; ++i) {
+        char keyName[64] = {0};
+        VkCodeToString(actionKeybinds[i], keyName, sizeof(keyName));
+        hbox = IupGetChild(keybindVBox, i);
+        text = IupGetChild(hbox, 1);
+        IupSetAttribute(text, "VALUE", keyName);
+    }
+
+    LoadKeybindsFromFile();
+
+    for (int i = 0; actions[i] != NULL; i++) {
+        // Create label
+        label = IupLabel(actions[i]);
+
+        // Create readonly text box for keybind
+        text = IupText(NULL);
+        IupSetAttribute(text, "READONLY", "YES");
+        IupSetCallback(text, "K_ANY", (Icallback)OnKeyCapture);
+
+        // Store the action index for this text box
+        IupSetAttribute(text, "ACTION_INDEX", (char*)(intptr_t)i);
+
+        // Set initial displayed key name
+        char keyName[64] = {0};
+        VkCodeToString(actionKeybinds[i], keyName, sizeof(keyName));
+        IupSetAttribute(text, "VALUE", keyName);
+
+        // Create horizontal box for label + textbox
+        hbox = IupHbox(label, text, NULL);
+
+        // Styling
+        IupSetAttribute(hbox, "BGCOLOR", "40 40 40");
+        IupSetAttribute(label, "FGCOLOR", "0 0 0");
+        IupSetAttribute(label, "BGCOLOR", "255 255 255");
+        IupSetAttribute(text, "BGCOLOR", "255 255 255");
+        IupSetAttribute(text, "FGCOLOR", "0 0 0");
+        IupSetAttribute(text, "EXPAND", "HORIZONTAL");
+
+        IupAppend(keybindVBox, hbox);
+    }
+
+    tabs = IupTabs(
+        topFrame,
+        bottomFrame,
+        keybindVBox,
+        NULL
+    );
+    IupSetAttribute(tabs, "TABTITLE0", "Filters");
+    IupSetAttribute(tabs, "TABTITLE1", "Modules");
+    IupSetAttribute(tabs, "TABTITLE2", "Keybinds");
+
     // dialog
     dialog = IupDialog(
         dialogVBox = IupVbox(
-            topFrame,
-            bottomFrame,
+            tabs,
             statusLabel,
+            themeList,
             NULL
         )
     );
@@ -234,7 +555,7 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(dialog, "SIZE", "480x"); // add padding manually to width
     IupSetAttribute(dialog, "RESIZE", "NO");
     IupSetCallback(dialog, "SHOW_CB", (Icallback)uiOnDialogShow);
-
+	// IupSetAttribute(dialog, "BGCOLOR", "0 0 0");
 
     // global layout settings to affect childrens
     IupSetAttribute(dialogVBox, "ALIGNMENT", "ACENTER");
@@ -246,18 +567,26 @@ void init(int argc, char* argv[]) {
     IupSetAttribute(timer, "TIME", STR(ICON_UPDATE_MS));
     IupSetCallback(timer, "ACTION_CB", uiTimerCb);
 
+    timer2 = IupTimer();
+    IupSetAttributes(timer2, "TIME=100, RUN=YES");
+    IupSetCallback(timer2, "ACTION_CB", uiRainbowTextColorCb);
+
     // setup timeout of program
     arg_value = IupGetGlobal("timeout");
-    if(arg_value != NULL)
-    {
+    if(arg_value != NULL) {
         char valueBuf[16];
-        sprintf(valueBuf, "%s000", arg_value);  // convert from seconds to milliseconds
+        snprintf(valueBuf, "%s000", arg_value);  // convert from seconds to milliseconds
 
         timeout = IupTimer();
         IupStoreAttribute(timeout, "TIME", valueBuf);
         IupSetCallback(timeout, "ACTION_CB", uiTimeoutCb);
         IupSetAttribute(timeout, "RUN", "YES");
     }
+
+     //Retrieve the applications instance
+    HINSTANCE instance = GetModuleHandle(NULL);
+    //Set a global Windows Hook to capture keystrokes using the function declared above
+    HHOOK test1 = SetWindowsHookEx( WH_KEYBOARD_LL, LowLevelKeyboardProc, instance,0);
 }
 
 void startup() {
@@ -284,6 +613,10 @@ void cleanup() {
 // ui logics
 void showStatus(const char *line) {
     IupStoreAttribute(statusLabel, "TITLE", line); 
+}
+
+static int KEYPRESS_CB(Ihandle *ih, int c, int press) {
+    LOG("Character: %d",c);
 }
 
 // in fact only 32bit binary would run on 64 bit os
@@ -314,7 +647,6 @@ static BOOL checkIsRunning() {
 
     return FALSE;
 }
-
 
 static int uiOnDialogShow(Ihandle *ih, int state) {
     // only need to process on show
@@ -359,7 +691,9 @@ static int uiOnDialogShow(Ihandle *ih, int state) {
 
 static int uiStartCb(Ihandle *ih) {
     char buf[MSG_BUFSIZE];
+	
     UNREFERENCED_PARAMETER(ih);
+	
     if (divertStart(IupGetAttribute(filterText, "VALUE"), buf) == 0) {
         showStatus(buf);
         return IUP_DEFAULT;
@@ -377,7 +711,8 @@ static int uiStartCb(Ihandle *ih) {
 
 static int uiStopCb(Ihandle *ih) {
     int ix;
-    UNREFERENCED_PARAMETER(ih);
+    
+	UNREFERENCED_PARAMETER(ih);
     
     // try stopping
     IupSetAttribute(filterButton, "ACTIVE", "NO");
@@ -403,7 +738,7 @@ static int uiStopCb(Ihandle *ih) {
 }
 
 static int uiToggleControls(Ihandle *ih, int state) {
-    Ihandle *controls = (Ihandle*)IupGetAttribute(ih, CONTROLS_HANDLE);
+    controls = (Ihandle*)IupGetAttribute(ih, CONTROLS_HANDLE);
     short *target = (short*)IupGetAttribute(ih, SYNCED_VALUE);
     int controlsActive = IupGetInt(controls, "ACTIVE");
     if (controlsActive && !state) {
@@ -430,8 +765,7 @@ static int uiTimerCb(Ihandle *ih) {
     }
 
     // update global send status icon
-    switch (sendState)
-    {
+    switch (sendState) {
     case SEND_STATUS_NONE:
         IupSetAttribute(stateIcon, "IMAGE", "none_icon");
         break;
@@ -470,7 +804,7 @@ static int uiFilterTextCb(Ihandle *ih)  {
 }
 
 static void uiSetupModule(Module *module, Ihandle *parent) {
-    Ihandle *groupBox, *toggle, *controls, *icon;
+    groupBox, toggle, controls, icon;
     groupBox = IupHbox(
         icon = IupLabel(NULL),
         toggle = IupToggle(module->displayName, NULL),
@@ -494,6 +828,7 @@ static void uiSetupModule(Module *module, Ihandle *parent) {
     IupSetAttribute(icon, "IMAGE", "none_icon");
     IupSetAttribute(icon, "PADDING", "4x");
     module->iconHandle = icon;
+	module->toggleHandle = toggle;
 
     // parameterize toggle
     if (parameterized) {
@@ -502,10 +837,24 @@ static void uiSetupModule(Module *module, Ihandle *parent) {
 }
 
 int main(int argc, char* argv[]) {
+	setup_crash_log_handler();
     LOG("Is Run As Admin: %d", IsRunAsAdmin());
     LOG("Is Elevated: %d", IsElevated());
+    LoadKeybindsFromFile();
     init(argc, argv);
     startup();
     cleanup();
     return 0;
+}
+
+void setEnabled(BOOL value) {
+    if (value) {
+        uiStartCb(NULL);
+    } else {
+        uiStopCb(NULL);
+    }
+}
+
+void setFilter(const char* value) {
+    setFromValue(filterText, "VALUE", value);
 }
