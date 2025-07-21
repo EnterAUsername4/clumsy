@@ -150,3 +150,10 @@ Module oodModule = {
     // runtime fields
     0, 0, NULL
 };
+
+void setOOD(int value) {
+    char str[256];
+    sprintf(str, "%d", value);
+    setFromValue(chanceInput, "VALUE", str);
+    setFromValue(oodModule.toggleHandle, "VALUE", value > 0 ? "YES" : "NO");
+}
